@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import pydeck as pdk
@@ -139,6 +140,54 @@ def load_overview_metrics() -> dict[str, float | int]:
         ),
         "alert_count": int(alerts.loc[0, "alert_count"] if not alerts.empty else 0),
     }
+
+
+def load_data_freshness() -> dict[str, Any]:
+    freshness = safe_query(
+        """
+        SELECT
+            MAX(snapshot_timestamp) AS latest_snapshot,
+            MAX(ingested_at) AS latest_ingested
+        FROM station_status_facts
+        """
+    )
+    if freshness.empty or freshness.loc[0, "latest_snapshot"] is None:
+        return {"latest_snapshot": None, "latest_ingested": None}
+
+    return {
+        "latest_snapshot": pd.Timestamp(freshness.loc[0, "latest_snapshot"]),
+        "latest_ingested": pd.Timestamp(freshness.loc[0, "latest_ingested"]),
+    }
+
+
+def describe_freshness(
+    latest_snapshot: pd.Timestamp | None,
+    poll_interval_seconds: int,
+    *,
+    now: pd.Timestamp | None = None,
+) -> tuple[str, str]:
+    if latest_snapshot is None:
+        return (
+            "info",
+            "Aucun snapshot n'est encore disponible dans PostgreSQL.",
+        )
+
+    reference_now = now or pd.Timestamp.now(tz="UTC")
+    snapshot_ts = latest_snapshot.tz_localize("UTC") if latest_snapshot.tzinfo is None else latest_snapshot.tz_convert("UTC")
+    age_seconds = max(int((reference_now - snapshot_ts).total_seconds()), 0)
+    age_minutes, remaining_seconds = divmod(age_seconds, 60)
+
+    if age_seconds <= poll_interval_seconds * 2:
+        return (
+            "success",
+            f"Dernier snapshot disponible il y a {age_minutes} min {remaining_seconds:02d} s.",
+        )
+
+    return (
+        "warning",
+        "Les donnees sont anciennes. Le producteur ou l'API CityBikes est probablement en pause ou limitee "
+        f"(dernier snapshot il y a {age_minutes} min {remaining_seconds:02d} s).",
+    )
 
 
 def render_overview() -> None:
@@ -345,6 +394,12 @@ def main() -> None:
         "Telemetrie station recue en direct depuis CityBikes, traitee par Kafka, Spark Structured Streaming, "
         f"PostgreSQL et Parquet. Rafraichissez la page apres chaque cycle de {settings.poll_interval_seconds} secondes."
     )
+    freshness = load_data_freshness()
+    freshness_level, freshness_message = describe_freshness(
+        freshness["latest_snapshot"],
+        settings.poll_interval_seconds,
+    )
+    getattr(st, freshness_level)(freshness_message)
 
     tabs = st.tabs(
         [

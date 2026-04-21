@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 import time
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -46,6 +47,39 @@ def normalize_label(value: str) -> str:
     normalized = unicodedata.normalize("NFKD", value or "")
     ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
     return " ".join(ascii_only.lower().strip().split())
+
+
+def normalize_timestamp_value(value: Any) -> str | None:
+    if value is None:
+        return None
+
+    normalized = str(value).strip()
+    if not normalized:
+        return None
+
+    # Some CityBikes payloads include both an explicit UTC offset and a trailing Z.
+    return re.sub(r"([+-]\d{2}:?\d{2})Z$", r"\1", normalized)
+
+
+def read_network_targets_cache(cache_path: Path) -> list[NetworkTarget]:
+    if not cache_path.exists():
+        return []
+
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    return [NetworkTarget(**item) for item in payload]
+
+
+def write_network_targets_cache(cache_path: Path, targets: list[NetworkTarget]) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(
+        json.dumps([asdict(target) for target in targets], ensure_ascii=True, indent=2),
+        encoding="utf-8",
+    )
+
+
+def is_rate_limited(exc: requests.RequestException) -> bool:
+    response = getattr(exc, "response", None)
+    return response is not None and response.status_code == 429
 
 
 def score_city_match(requested_city: str, actual_city: str) -> tuple[int, int]:
@@ -122,7 +156,7 @@ def normalize_station_payload(
     ingested_at: str,
 ) -> dict[str, Any]:
     station_id = station.get("id") or station.get("extra", {}).get("uid")
-    timestamp = station.get("timestamp") or ingested_at
+    timestamp = normalize_timestamp_value(station.get("timestamp")) or ingested_at
 
     return {
         "station_id": str(station_id) if station_id is not None else None,
@@ -135,7 +169,7 @@ def normalize_station_payload(
         "network_id": network_id,
         "city": city,
         "station_key": f"{network_id}:{station_id}" if station_id is not None else None,
-        "ingested_at": ingested_at,
+        "ingested_at": normalize_timestamp_value(ingested_at),
     }
 
 
@@ -150,12 +184,17 @@ class CityBikesClient:
             read=5,
             status=5,
             backoff_factor=1.0,
-            status_forcelist=(429, 500, 502, 503, 504),
+            status_forcelist=(500, 502, 503, 504),
             allowed_methods=("GET",),
+            respect_retry_after_header=False,
         )
         adapter = HTTPAdapter(max_retries=retries)
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
+
+    @property
+    def cache_path(self) -> Path:
+        return self.settings.network_cache_path
 
     @property
     def headers(self) -> dict[str, str]:
@@ -172,14 +211,27 @@ class CityBikesClient:
         return payload.get("networks", [])
 
     def resolve_network_targets(self) -> list[NetworkTarget]:
-        networks = self.fetch_network_catalog()
-        targets = select_target_networks(networks, self.settings.target_cities)
-        LOGGER.info(
-            "Resolved %s target network(s): %s",
-            len(targets),
-            ", ".join(f"{target.city}={target.network_id}" for target in targets),
-        )
-        return targets
+        try:
+            networks = self.fetch_network_catalog()
+            targets = select_target_networks(networks, self.settings.target_cities)
+            write_network_targets_cache(self.cache_path, targets)
+            LOGGER.info(
+                "Resolved %s target network(s): %s",
+                len(targets),
+                ", ".join(f"{target.city}={target.network_id}" for target in targets),
+            )
+            LOGGER.info("Cached resolved network targets at %s", self.cache_path)
+            return targets
+        except (requests.RequestException, RuntimeError) as exc:
+            cached_targets = read_network_targets_cache(self.cache_path)
+            if cached_targets:
+                LOGGER.warning(
+                    "CityBikes network discovery failed%s. Falling back to cached targets from %s",
+                    " with HTTP 429 rate limiting" if isinstance(exc, requests.RequestException) and is_rate_limited(exc) else f" ({exc})",
+                    self.cache_path,
+                )
+                return cached_targets
+            raise
 
     def fetch_network_snapshot(self, network: NetworkTarget) -> list[dict[str, Any]]:
         if network.href.startswith("http://") or network.href.startswith("https://"):
@@ -259,7 +311,9 @@ def run_producer() -> None:
 
     while True:
         cycle_started = time.monotonic()
-        ingested_at = datetime.now(timezone.utc).isoformat()
+        ingested_at = (
+            datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        )
         produced_messages = 0
 
         for target in targets:
@@ -286,10 +340,19 @@ def run_producer() -> None:
                     target.city,
                     target.network_id,
                 )
-            except requests.RequestException:
-                LOGGER.exception(
-                    "CityBikes request failed for %s (%s)", target.city, target.network_id
-                )
+            except requests.RequestException as exc:
+                if is_rate_limited(exc):
+                    LOGGER.warning(
+                        "CityBikes rate limit hit for %s (%s). No new snapshot published this cycle.",
+                        target.city,
+                        target.network_id,
+                    )
+                else:
+                    LOGGER.exception(
+                        "CityBikes request failed for %s (%s)",
+                        target.city,
+                        target.network_id,
+                    )
             except Exception:
                 LOGGER.exception(
                     "Unexpected producer failure for %s (%s)", target.city, target.network_id

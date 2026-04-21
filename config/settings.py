@@ -29,6 +29,14 @@ def _get_float(name: str, default: float) -> float:
     return float(os.getenv(name, str(default)))
 
 
+def _get_path(name: str, default: Path) -> Path:
+    raw_value = os.getenv(name, str(default))
+    path = Path(raw_value)
+    if path.is_absolute():
+        return path
+    return (PROJECT_ROOT / path).resolve()
+
+
 def _parse_csv(value: str) -> tuple[str, ...]:
     items = [item.strip() for item in value.split(",")]
     return tuple(item for item in items if item)
@@ -44,6 +52,8 @@ class Settings:
     kafka_topic: str
     kafka_client_id: str
     kafka_replication_factor: int
+    kafka_starting_offsets: str
+    network_cache_path: Path
     postgres_host: str
     postgres_port: int
     postgres_db: str
@@ -91,6 +101,11 @@ def load_settings() -> Settings:
         kafka_topic=_get_env("KAFKA_TOPIC", "bike-stations"),
         kafka_client_id=_get_env("KAFKA_CLIENT_ID", "citybike-producer"),
         kafka_replication_factor=_get_int("KAFKA_REPLICATION_FACTOR", 1),
+        kafka_starting_offsets=_get_env("KAFKA_STARTING_OFFSETS", "earliest").lower(),
+        network_cache_path=_get_path(
+            "CITYBIKES_NETWORK_CACHE_PATH",
+            PROJECT_ROOT / "data" / "cache" / "resolved_networks.json",
+        ),
         postgres_host=_get_env("POSTGRES_HOST", "localhost"),
         postgres_port=_get_int("POSTGRES_PORT", 5432),
         postgres_db=_get_env("POSTGRES_DB", "citybike"),

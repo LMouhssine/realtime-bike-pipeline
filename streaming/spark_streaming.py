@@ -42,11 +42,12 @@ def build_station_schema() -> StructType:
 
 
 def parse_timestamp(column_name: str) -> F.Column:
+    sanitized = F.regexp_replace(F.trim(F.col(column_name)), r"([+-]\d{2}:?\d{2})Z$", r"\1")
     return F.coalesce(
-        F.to_timestamp(F.col(column_name)),
-        F.to_timestamp(F.col(column_name), "yyyy-MM-dd'T'HH:mm:ssXXX"),
-        F.to_timestamp(F.col(column_name), "yyyy-MM-dd'T'HH:mm:ss.SSSXXX"),
-        F.to_timestamp(F.col(column_name), "yyyy-MM-dd HH:mm:ss"),
+        F.to_timestamp(sanitized),
+        F.to_timestamp(sanitized, "yyyy-MM-dd'T'HH:mm:ssXXX"),
+        F.to_timestamp(sanitized, "yyyy-MM-dd'T'HH:mm:ss.SSSXXX"),
+        F.to_timestamp(sanitized, "yyyy-MM-dd HH:mm:ss"),
     )
 
 
@@ -125,6 +126,7 @@ def create_spark_session(settings: Settings) -> SparkSession:
         SparkSession.builder.appName(settings.spark_app_name)
         .master(settings.spark_master_url)
         .config("spark.sql.session.timeZone", "UTC")
+        .config("spark.sql.shuffle.partitions", "8")
         .config("spark.sql.streaming.forceDeleteTempCheckpointLocation", "true")
         .getOrCreate()
     )
@@ -153,7 +155,7 @@ def run_streaming_job() -> None:
         spark.readStream.format("kafka")
         .option("kafka.bootstrap.servers", settings.kafka_bootstrap_servers)
         .option("subscribe", settings.kafka_topic)
-        .option("startingOffsets", "latest")
+        .option("startingOffsets", settings.kafka_starting_offsets)
         .option("failOnDataLoss", "false")
         .load()
     )

@@ -7,6 +7,7 @@ import psycopg2
 from psycopg2.extensions import connection as PgConnection
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
+from pyspark.storagelevel import StorageLevel
 
 from config.settings import Settings, load_settings
 
@@ -122,7 +123,7 @@ class DbWriter:
             .mode("overwrite")
             .save()
         )
-        LOGGER.info("Loaded %s row(s) into staging table", batch_df.count())
+        LOGGER.info("Loaded micro-batch into staging table")
 
     def refresh_analytics(self) -> None:
         with self._connect() as conn:
@@ -420,12 +421,15 @@ class DbWriter:
     def write_micro_batch(self, batch_df: DataFrame, batch_id: int) -> None:
         self.bootstrap_schema()
 
-        if batch_df.rdd.isEmpty():
-            LOGGER.info("Skipping empty micro-batch %s", batch_id)
-            return
+        enriched_batch = (
+            batch_df.withColumn("batch_id", F.lit(int(batch_id)))
+            .select(*STAGE_COLUMNS)
+            .persist(StorageLevel.MEMORY_AND_DISK)
+        )
 
-        enriched_batch = batch_df.withColumn("batch_id", F.lit(int(batch_id))).select(*STAGE_COLUMNS)
-
-        self.archive_batch(enriched_batch)
-        self.load_stage_table(enriched_batch)
-        self.refresh_analytics()
+        try:
+            self.archive_batch(enriched_batch)
+            self.load_stage_table(enriched_batch)
+            self.refresh_analytics()
+        finally:
+            enriched_batch.unpersist()

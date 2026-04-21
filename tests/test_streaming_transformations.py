@@ -74,3 +74,33 @@ def test_clean_station_frame_handles_zero_capacity(spark_session) -> None:
     row = result[0]
     assert row.capacity == 0
     assert row.utilization_rate == 0.0
+
+
+def test_clean_station_frame_accepts_duplicate_utc_suffix_timestamp(spark_session) -> None:
+    schema = build_station_schema()
+    input_df = spark_session.createDataFrame(
+        [
+            (
+                "789",
+                "Station UTC",
+                44.8378,
+                -0.5792,
+                3,
+                9,
+                "2026-04-21T11:59:43.000998+00:00Z",
+                "v3-bordeaux",
+                "Bordeaux",
+                "v3-bordeaux:789",
+                "2026-04-21T11:59:44.000998+00:00Z",
+            )
+        ],
+        schema=schema,
+    )
+
+    result = clean_station_frame(input_df).collect()
+
+    assert len(result) == 1
+    row = result[0]
+    assert row.station_key == "v3-bordeaux:789"
+    assert row.snapshot_timestamp is not None
+    assert row.ingested_at is not None
