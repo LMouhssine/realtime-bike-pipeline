@@ -19,6 +19,39 @@ from config.settings import load_settings
 
 
 LOGGER = logging.getLogger("citybike.dashboard")
+DISPLAY_LABELS = {
+    "city": "Ville",
+    "station_name": "Station",
+    "bikes_available": "Velos disponibles",
+    "free_slots": "Bornes libres",
+    "utilization_rate": "Taux d'utilisation",
+    "snapshot_timestamp": "Horodatage",
+    "latitude": "Latitude",
+    "longitude": "Longitude",
+    "rolling_15m_utilization": "Utilisation glissante 15 min",
+    "alert_level": "Niveau d'alerte",
+    "alert_type": "Type d'alerte",
+    "alert_message": "Message d'alerte",
+    "created_at": "Cree le",
+    "zone_id": "Zone",
+    "avg_bikes_available": "Moyenne velos disponibles",
+    "avg_capacity": "Capacite moyenne",
+    "zone_availability_ratio": "Ratio disponibilite zone",
+    "city_availability_ratio": "Ratio disponibilite ville",
+    "imbalance_score": "Score de desequilibre",
+    "usage_date": "Date",
+    "usage_hour": "Heure",
+    "estimated_activity": "Activite estimee",
+    "peak_rank": "Rang du pic",
+}
+ALERT_LEVEL_LABELS = {
+    "critical": "critique",
+    "empty-and-critical": "vide et critique",
+}
+ALERT_TYPE_LABELS = {
+    "critical": "critique",
+    "empty": "station vide",
+}
 
 
 def configure_logging() -> None:
@@ -50,6 +83,20 @@ def prepare_map_frame(df: pd.DataFrame) -> pd.DataFrame:
     frame["lat"] = frame["latitude"]
     frame["lon"] = frame["longitude"]
     return frame.dropna(subset=["lat", "lon"])
+
+
+def localize_frame(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    localized = df.copy()
+
+    if "alert_level" in localized.columns:
+        localized["alert_level"] = localized["alert_level"].replace(ALERT_LEVEL_LABELS)
+    if "alert_type" in localized.columns:
+        localized["alert_type"] = localized["alert_type"].replace(ALERT_TYPE_LABELS)
+
+    return localized.rename(columns=DISPLAY_LABELS)
 
 
 def load_overview_metrics() -> dict[str, float | int]:
@@ -97,14 +144,14 @@ def load_overview_metrics() -> dict[str, float | int]:
 def render_overview() -> None:
     metrics = load_overview_metrics()
     metric_columns = st.columns(5)
-    metric_columns[0].metric("Tracked stations", metrics["total_stations"])
-    metric_columns[1].metric("Cities", metrics["tracked_cities"])
+    metric_columns[0].metric("Stations suivies", metrics["total_stations"])
+    metric_columns[1].metric("Villes", metrics["tracked_cities"])
     metric_columns[2].metric(
-        "Average utilization",
+        "Utilisation moyenne",
         f"{metrics['avg_utilization_rate']:.1%}",
     )
-    metric_columns[3].metric("Critical stations", metrics["critical_station_count"])
-    metric_columns[4].metric("24h alerts", metrics["alert_count"])
+    metric_columns[3].metric("Stations critiques", metrics["critical_station_count"])
+    metric_columns[4].metric("Alertes 24 h", metrics["alert_count"])
 
     top_stations = safe_query(
         """
@@ -116,11 +163,13 @@ def render_overview() -> None:
         {"limit": load_settings().top_station_limit},
     )
     if top_stations.empty:
-        st.info("No station data is available yet. Start Kafka, Spark, and the producer first.")
+        st.info(
+            "Aucune donnee station n'est encore disponible. Demarrez d'abord Kafka, Spark et le producteur."
+        )
         return
 
-    st.subheader("Highest utilization stations")
-    st.dataframe(top_stations, use_container_width=True, hide_index=True)
+    st.subheader("Stations avec le plus fort taux d'utilisation")
+    st.dataframe(localize_frame(top_stations), use_container_width=True, hide_index=True)
 
 
 def render_station_map() -> None:
@@ -141,11 +190,11 @@ def render_station_map() -> None:
     )
     map_frame = prepare_map_frame(latest_status)
     if map_frame.empty:
-        st.info("Map will appear after the first successful micro-batch.")
+        st.info("La carte apparaitra apres le premier micro-batch traite avec succes.")
         return
 
     st.map(map_frame[["lat", "lon"]], use_container_width=True)
-    st.dataframe(map_frame, use_container_width=True, hide_index=True)
+    st.dataframe(localize_frame(map_frame), use_container_width=True, hide_index=True)
 
 
 def render_utilization_heatmap() -> None:
@@ -162,7 +211,7 @@ def render_utilization_heatmap() -> None:
     )
     heatmap_df = prepare_map_frame(heatmap_df)
     if heatmap_df.empty:
-        st.info("Utilization heatmap is waiting for live data.")
+        st.info("La carte de chaleur attend l'arrivee de donnees en direct.")
         return
 
     layer = pdk.Layer(
@@ -185,7 +234,7 @@ def render_utilization_heatmap() -> None:
         pdk.Deck(
             layers=[layer],
             initial_view_state=view_state,
-            tooltip={"text": "{station_name} ({city})\nUtilization: {utilization_rate}"},
+            tooltip={"text": "{station_name} ({city})\nTaux d'utilisation: {utilization_rate}"},
         )
     )
 
@@ -199,7 +248,9 @@ def render_time_series() -> None:
         """
     )
     if peaks.empty:
-        st.info("Usage-peak analytics will populate after historical snapshots accumulate.")
+        st.info(
+            "L'analyse des pics d'usage se remplira une fois qu'un historique suffisant de snapshots sera disponible."
+        )
         return
 
     peaks["label"] = peaks["usage_date"].astype(str) + " " + peaks["usage_hour"].astype(str) + ":00"
@@ -210,7 +261,7 @@ def render_time_series() -> None:
         aggfunc="sum",
     ).fillna(0.0)
     st.line_chart(chart_frame, use_container_width=True)
-    st.dataframe(peaks, use_container_width=True, hide_index=True)
+    st.dataframe(localize_frame(peaks), use_container_width=True, hide_index=True)
 
 
 def render_alerts() -> None:
@@ -246,16 +297,16 @@ def render_alerts() -> None:
     )
 
     if critical.empty and alerts.empty:
-        st.info("No critical or empty-station alerts have been generated yet.")
+        st.info("Aucune alerte de station vide ou critique n'a encore ete generee.")
         return
 
     if not critical.empty:
-        st.subheader("Critical stations")
-        st.dataframe(critical, use_container_width=True, hide_index=True)
+        st.subheader("Stations critiques")
+        st.dataframe(localize_frame(critical), use_container_width=True, hide_index=True)
 
     if not alerts.empty:
-        st.subheader("Recent alerts")
-        st.dataframe(alerts, use_container_width=True, hide_index=True)
+        st.subheader("Alertes recentes")
+        st.dataframe(localize_frame(alerts), use_container_width=True, hide_index=True)
 
 
 def render_geographic_imbalance() -> None:
@@ -274,10 +325,10 @@ def render_geographic_imbalance() -> None:
         """
     )
     if imbalance.empty:
-        st.info("Geographic imbalance analysis will appear once latest station snapshots are loaded.")
+        st.info("L'analyse du desequilibre geographique apparaitra une fois les derniers snapshots charges.")
         return
 
-    st.dataframe(imbalance, use_container_width=True, hide_index=True)
+    st.dataframe(localize_frame(imbalance), use_container_width=True, hide_index=True)
 
 
 def main() -> None:
@@ -285,24 +336,24 @@ def main() -> None:
     settings = load_settings()
 
     st.set_page_config(
-        page_title="CityBike Stream Analytics",
+        page_title="Analyse CityBike en Temps Reel",
         page_icon=":bike:",
         layout="wide",
     )
-    st.title("France CityBikes Real-Time Analytics")
+    st.title("Analyse en temps reel des velos urbains en France")
     st.caption(
-        "Live station telemetry from CityBikes, processed through Kafka, Spark Structured Streaming, "
-        f"PostgreSQL, and Parquet. Refresh the page after each {settings.poll_interval_seconds}-second cycle."
+        "Telemetrie station recue en direct depuis CityBikes, traitee par Kafka, Spark Structured Streaming, "
+        f"PostgreSQL et Parquet. Rafraichissez la page apres chaque cycle de {settings.poll_interval_seconds} secondes."
     )
 
     tabs = st.tabs(
         [
-            "Overview",
-            "Station Map",
-            "Utilization Heatmap",
-            "Daily Usage Peaks",
-            "Geographic Imbalance",
-            "Alerts",
+            "Vue d'ensemble",
+            "Carte des stations",
+            "Carte de chaleur",
+            "Pics d'usage",
+            "Desequilibre geographique",
+            "Alertes",
         ]
     )
 

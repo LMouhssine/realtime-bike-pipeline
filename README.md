@@ -1,8 +1,8 @@
-﻿# Real-Time France CityBikes Pipeline
+# Pipeline CityBikes France en Temps Reel
 
-An end-to-end streaming analytics project that ingests live bike-station telemetry from the [CityBikes API](https://api.citybik.es/v2/), pushes it through Kafka, processes it with PySpark Structured Streaming, stores curated outputs in PostgreSQL and Parquet, and exposes urban mobility insights in Streamlit.
+Projet de streaming de bout en bout pour ingerer la telemetrie des stations de velos depuis l'[API CityBikes](https://api.citybik.es/v2/), la publier dans Kafka, la traiter avec PySpark Structured Streaming, la stocker dans PostgreSQL et Parquet, puis exposer des indicateurs de mobilite urbaine dans Streamlit.
 
-The default configuration targets five major French cities every 60 seconds:
+La configuration par defaut cible cinq grandes villes francaises toutes les 60 secondes :
 
 - Paris
 - Lyon
@@ -10,27 +10,27 @@ The default configuration targets five major French cities every 60 seconds:
 - Toulouse
 - Bordeaux
 
-`CITYBIKES_API_KEY` is strongly recommended. The public CityBikes API documents a `300 requests/hour` limit, and polling five cities every minute leaves very little room for retries.
+`CITYBIKES_API_KEY` est fortement recommande. L'API publique CityBikes documente une limite de `300 requetes/heure`, et un polling de cinq villes toutes les minutes laisse tres peu de marge pour les retries.
 
 ## Architecture
 
 ```text
                   +----------------------+
-                  |  CityBikes API v2    |
+                  |  API CityBikes v2    |
                   |  /networks + feeds   |
                   +----------+-----------+
                              |
                              v
                   +----------------------+
-                  | Python Producer      |
+                  | Producteur Python    |
                   | requests + retries   |
-                  | dynamic FRA network  |
-                  | discovery            |
+                  | decouverte reseaux   |
+                  | FRA dynamique        |
                   +----------+-----------+
                              |
                              v
                   +----------------------+
-                  | Kafka topic          |
+                  | Topic Kafka          |
                   | bike-stations        |
                   +----------+-----------+
                              |
@@ -38,25 +38,25 @@ The default configuration targets five major French cities every 60 seconds:
                   +----------------------+
                   | Spark Structured     |
                   | Streaming            |
-                  | schema + cleansing   |
-                  | utilization metrics  |
+                  | schema + nettoyage   |
+                  | metriques usage      |
                   +----+------------+----+
                        |            |
                        v            v
          +-------------------+   +----------------------+
-         | PostgreSQL        |   | Parquet archive      |
-         | facts + gold      |   | partitioned history  |
-         | analytics tables  |   | data lake            |
+         | PostgreSQL        |   | Archive Parquet      |
+         | faits + tables    |   | historique partition |
+         | analytiques       |   | data lake local      |
          +---------+---------+   +----------------------+
                    |
                    v
          +----------------------+
-         | Streamlit dashboard  |
-         | maps, peaks, alerts  |
+         | Dashboard Streamlit  |
+         | cartes, pics, alertes|
          +----------------------+
 ```
 
-## Project Structure
+## Structure du projet
 
 ```text
 citybike-stream-analytics/
@@ -92,9 +92,9 @@ citybike-stream-analytics/
 └── README.md
 ```
 
-## What The Pipeline Produces
+## Ce que produit le pipeline
 
-Each Kafka message contains:
+Chaque message Kafka contient :
 
 - `station_id`
 - `station_name`
@@ -108,7 +108,7 @@ Each Kafka message contains:
 - `station_key`
 - `ingested_at`
 
-Spark enriches each record with:
+Spark enrichit ensuite chaque enregistrement avec :
 
 - `capacity`
 - `utilization_rate`
@@ -116,7 +116,7 @@ Spark enriches each record with:
 - `event_date`
 - `event_hour`
 
-PostgreSQL stores:
+PostgreSQL stocke les objets suivants :
 
 - `station_status_facts`
 - `latest_station_status`
@@ -127,39 +127,45 @@ PostgreSQL stores:
 - `critical_stations`
 - `station_alerts`
 
-Parquet history is written under `data/parquet/station_status/`.
+L'historique Parquet est ecrit sous `data/parquet/station_status/`.
 
-## Setup
+## Installation
 
-### 1. Prerequisites
+### 1. Prerequis
 
-- Docker Desktop with Compose
-- Python 3.11 or 3.12 recommended for local development
-- Java is not required locally if Spark runs in Docker
+- Docker Desktop avec Compose
+- Python 3.11 ou 3.12 recommande pour les composants lances en local
+- Java n'est pas necessaire en local si Spark est execute dans Docker
 
-### 2. Configure Environment
+Remarque :
 
-Copy the example env file:
+- Python 3.13 peut poser probleme avec `kafka-python` sur certaines machines. Si c'est votre cas, utilisez un conteneur Python dedie pour le producteur ou le dashboard.
+
+### 2. Configurer l'environnement
+
+Copiez le fichier d'exemple :
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-Set your API key if you have one:
+Ajoutez votre cle API si vous en avez une :
 
 ```dotenv
 CITYBIKES_API_KEY=your_api_key_here
 ```
 
-Host-side defaults are already configured for:
+Ports exposes sur l'hote :
 
-- Kafka on `localhost:29092`
-- PostgreSQL on `localhost:5432`
-- Streamlit on `localhost:8501`
+- Kafka : `localhost:29092`
+- PostgreSQL : `localhost:55432`
+- UI Spark Master : `localhost:8080`
+- UI Spark Worker : `localhost:8081`
+- Dashboard Streamlit : `localhost:8501` une fois lance
 
-### 3. Install Python Dependencies
+### 3. Installer les dependances Python
 
-Runtime dependencies for the producer and dashboard:
+Dependances runtime pour le producteur et le dashboard :
 
 ```powershell
 python -m venv .venv
@@ -168,121 +174,135 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-Optional test dependencies:
+Dependances de test en option :
 
 ```powershell
 python -m pip install -r requirements-dev.txt
 ```
 
-### 4. Start Infrastructure
+### 4. Demarrer l'infrastructure
 
-Build the custom Spark image and launch the platform stack:
+Construisez l'image Spark personnalisee puis lancez la plateforme :
 
 ```powershell
 docker compose build spark-master spark-worker
 docker compose up -d
 ```
 
-Available service UIs:
+Interfaces disponibles :
 
-- Spark Master UI: [http://localhost:8080](http://localhost:8080)
-- Spark Worker UI: [http://localhost:8081](http://localhost:8081)
+- Spark Master UI : [http://localhost:8080](http://localhost:8080)
+- Spark Worker UI : [http://localhost:8081](http://localhost:8081)
 
-## How To Run The Pipeline
+## Execution du pipeline
 
-Start components in this order.
+Demarrez les composants dans cet ordre.
 
-### 1. Start The Producer
+### 1. Demarrer le producteur
 
-From the project root:
+Depuis la racine du projet :
 
 ```powershell
 python -m data_ingestion.producer
 ```
 
-What it does:
+Ce qu'il fait :
 
-- discovers French CityBikes networks dynamically from `/networks`
-- resolves the configured target cities
-- creates Kafka topic `bike-stations` if missing
-- fetches station snapshots every 60 seconds
-- publishes one JSON message per station
+- decouvre dynamiquement les reseaux francais CityBikes via `/networks`
+- resout les villes cibles configurees
+- cree le topic Kafka `bike-stations` s'il n'existe pas
+- recupere les snapshots de stations toutes les 60 secondes
+- publie un message JSON par station
 
-### 2. Start The Spark Streaming Job
+### 2. Demarrer le job Spark Structured Streaming
 
-Run the job inside the Spark master container:
+Executez le job dans le conteneur Spark master :
 
 ```powershell
-docker compose exec spark-master /opt/bitnami/spark/bin/spark-submit `
+docker compose exec spark-master /opt/spark/bin/spark-submit `
   --master spark://spark-master:7077 `
-  --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,org.postgresql:postgresql:42.7.3 `
+  --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.8,org.postgresql:postgresql:42.7.3 `
   /opt/project/streaming/spark_streaming.py
 ```
 
-What it does:
+Ce qu'il fait :
 
-- reads Kafka topic `bike-stations`
-- applies an explicit schema
-- drops malformed or impossible records
-- deduplicates by `station_key + snapshot_timestamp`
-- computes `capacity` and `utilization_rate`
-- archives cleaned data to Parquet
-- writes facts and analytics tables to PostgreSQL
+- lit le topic Kafka `bike-stations`
+- applique un schema explicite
+- supprime les enregistrements invalides ou impossibles
+- deduplique sur `station_key + snapshot_timestamp`
+- calcule `capacity` et `utilization_rate`
+- archive les donnees nettoyees dans Parquet
+- ecrit les faits et les tables analytiques dans PostgreSQL
 
-### 3. Start The Dashboard
+### 3. Demarrer le dashboard
 
-In a separate shell:
+Dans un autre shell :
 
 ```powershell
 streamlit run dashboard/app.py
 ```
 
-Dashboard tabs:
+Onglets du dashboard :
 
-- Overview
-- Station Map
-- Utilization Heatmap
-- Daily Usage Peaks
-- Geographic Imbalance
-- Alerts
+- Vue d'ensemble
+- Carte des stations
+- Carte de chaleur
+- Pics d'usage
+- Desequilibre geographique
+- Alertes
 
-## Business Logic Implemented
+### 4. Interroger PostgreSQL
 
-### Highest utilization rate
+Depuis l'hote :
 
-- table: `top_utilization_stations`
-- definition: latest snapshot ranked by `utilization_rate DESC`
+```powershell
+psql -h localhost -p 55432 -U citybike -d citybike
+```
 
-### Zones with insufficient bike availability
+Ou directement dans le conteneur :
 
-- table: `low_availability_zones`
-- definition: latest `zone_id` groups with average `bikes_available < LOW_AVAILABILITY_THRESHOLD`
+```powershell
+docker exec -it realtime-bike-pipeline-postgres-1 psql -U citybike -d citybike
+```
 
-### Daily usage peaks
+## Logique metier implemente
 
-- table: `daily_usage_peaks`
-- definition: hourly activity proxy from station-level deltas in `bikes_available` and `free_slots`
+### Taux d'utilisation maximal
 
-### Geographic imbalance
+- table : `top_utilization_stations`
+- definition : dernier snapshot classe par `utilization_rate DESC`
 
-- table: `geographic_imbalance`
-- definition: zone availability ratio compared with the city-wide ratio
+### Zones avec disponibilite insuffisante
 
-### Critical stations
+- table : `low_availability_zones`
+- definition : groupes `zone_id` du dernier snapshot avec une moyenne `bikes_available < LOW_AVAILABILITY_THRESHOLD`
 
-- table: `critical_stations`
-- definition: `bikes_available <= CRITICAL_BIKES_THRESHOLD` and rolling 15-minute utilization above `CRITICAL_UTILIZATION_THRESHOLD`
+### Pics d'usage journaliers
 
-### Alerts
+- table : `daily_usage_peaks`
+- definition : proxy horaire d'activite calcule a partir des deltas de `bikes_available` et `free_slots`
 
-- table: `station_alerts`
-- emitted when:
-  - a station becomes empty
-  - a station enters the critical-state rule
+### Desequilibre geographique
 
-## Example Queries
+- table : `geographic_imbalance`
+- definition : ratio de disponibilite de la zone compare au ratio moyen de la ville
 
-Top constrained stations:
+### Stations critiques
+
+- table : `critical_stations`
+- definition : `bikes_available <= CRITICAL_BIKES_THRESHOLD` et utilisation glissante sur 15 minutes au-dessus de `CRITICAL_UTILIZATION_THRESHOLD`
+
+### Alertes
+
+- table : `station_alerts`
+- emises quand :
+  - une station devient vide
+  - une station entre dans l'etat critique
+
+## Exemples de requetes
+
+Stations les plus contraintes :
 
 ```sql
 SELECT city, station_name, bikes_available, free_slots, utilization_rate
@@ -291,7 +311,7 @@ ORDER BY utilization_rank
 LIMIT 10;
 ```
 
-Zones likely to need rebalancing:
+Zones susceptibles d'avoir besoin de reequilibrage :
 
 ```sql
 SELECT city, zone_id, avg_bikes_available, avg_utilization_rate
@@ -300,7 +320,7 @@ WHERE shortage_flag = TRUE
 ORDER BY avg_bikes_available ASC;
 ```
 
-Daily peak hours by city:
+Heures de pointe par ville :
 
 ```sql
 SELECT city, usage_date, usage_hour, estimated_activity
@@ -309,7 +329,7 @@ WHERE peak_rank = 1
 ORDER BY usage_date DESC, city;
 ```
 
-Most imbalanced zones:
+Zones les plus desequilibrees :
 
 ```sql
 SELECT city, zone_id, imbalance_score, zone_availability_ratio, city_availability_ratio
@@ -318,7 +338,7 @@ ORDER BY ABS(imbalance_score) DESC
 LIMIT 20;
 ```
 
-Recent alerts:
+Alertes recentes :
 
 ```sql
 SELECT city, station_name, alert_type, alert_message, snapshot_timestamp
@@ -327,30 +347,30 @@ ORDER BY created_at DESC
 LIMIT 20;
 ```
 
-## Testing
+## Tests
 
-Run unit tests:
+Executer les tests unitaires :
 
 ```powershell
 python -m pytest tests/test_producer.py tests/test_dashboard_helpers.py
 ```
 
-Run Spark transformation tests if `pyspark` is installed locally:
+Executer les tests de transformation Spark si `pyspark` est installe localement :
 
 ```powershell
 python -m pytest tests/test_streaming_transformations.py
 ```
 
-## Notes And Tradeoffs
+## Notes et compromis
 
-- This is a local showcase pipeline, not a production deployment.
-- Demand is inferred from changing station state because CityBikes exposes availability snapshots, not trip events.
-- The dashboard is intentionally read-only and handles empty startup states gracefully.
-- Airflow is not included in v1 to keep the stack runnable without a second orchestration layer.
-- CityBikes historical parquet data exists separately at [data.citybik.es](https://data.citybik.es/), but this project builds its own local historical archive from the live stream.
+- Ce projet est une vitrine locale, pas un deploiement de production.
+- La demande est deduite de l'evolution de l'etat des stations, car CityBikes expose des snapshots de disponibilite et non des evenements de trajet.
+- Le dashboard est volontairement en lecture seule et gere proprement les etats de demarrage a vide.
+- Airflow n'est pas inclus dans cette v1 afin de garder un stack simple a lancer localement.
+- Un historique CityBikes existe deja sur [data.citybik.es](https://data.citybik.es/), mais ce projet reconstruit son propre historique local a partir du flux temps reel.
 
 ## Attribution
 
-- Live data source: [CityBikes API v2](https://api.citybik.es/v2/)
-- API docs and rate-limit notes: [docs.citybik.es/api](https://docs.citybik.es/api/)
-- Historical dataset reference: [data.citybik.es](https://data.citybik.es/)
+- Source de donnees live : [CityBikes API v2](https://api.citybik.es/v2/)
+- Documentation API et limites : [docs.citybik.es/api](https://docs.citybik.es/api/)
+- Reference dataset historique : [data.citybik.es](https://data.citybik.es/)
