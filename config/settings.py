@@ -67,6 +67,7 @@ class Settings:
     critical_bikes_threshold: int
     critical_utilization_threshold: float
     top_station_limit: int
+    dashboard_refresh_seconds: int
     streamlit_server_port: int
 
     @property
@@ -123,5 +124,6 @@ def load_settings() -> Settings:
         critical_bikes_threshold=_get_int("CRITICAL_BIKES_THRESHOLD", 2),
         critical_utilization_threshold=_get_float("CRITICAL_UTILIZATION_THRESHOLD", 0.85),
         top_station_limit=_get_int("TOP_STATION_LIMIT", 10),
+        dashboard_refresh_seconds=_get_int("DASHBOARD_REFRESH_SECONDS", 5),
         streamlit_server_port=_get_int("STREAMLIT_SERVER_PORT", 8501),
     )

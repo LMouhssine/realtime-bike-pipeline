@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from dashboard.app import describe_freshness, prepare_map_frame
+from dashboard.app import apply_station_focus, describe_freshness, prepare_map_frame
 
 
 def test_prepare_map_frame_creates_streamlit_columns() -> None:
@@ -45,3 +45,30 @@ def test_describe_freshness_returns_warning_for_stale_data() -> None:
 
     assert level == "warning"
     assert "Les donnees sont anciennes" in message
+
+
+def test_apply_station_focus_keeps_only_critical_or_low_stock_rows() -> None:
+    frame = pd.DataFrame(
+        [
+            {"station_name": "A", "utilization_rate": 0.30, "bikes_available": 7},
+            {"station_name": "B", "utilization_rate": 0.91, "bikes_available": 4},
+            {"station_name": "C", "utilization_rate": 0.42, "bikes_available": 1},
+        ]
+    )
+
+    focused = apply_station_focus(frame, "Sous tension")
+
+    assert list(focused["station_name"]) == ["B", "C"]
+
+
+def test_apply_station_focus_keeps_only_empty_rows() -> None:
+    frame = pd.DataFrame(
+        [
+            {"station_name": "A", "utilization_rate": 0.30, "bikes_available": 0},
+            {"station_name": "B", "utilization_rate": 0.91, "bikes_available": 4},
+        ]
+    )
+
+    focused = apply_station_focus(frame, "Stations vides")
+
+    assert list(focused["station_name"]) == ["A"]
