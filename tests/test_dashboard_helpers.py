@@ -199,6 +199,8 @@ def test_load_dashboard_payload_handles_empty_state(monkeypatch) -> None:
     assert payload.metrics["total_stations"] == 0
     assert payload.latest_status.empty
     assert payload.alerts.empty
+    assert "city" in payload.latest_status.columns
+    assert "station_name" in payload.alerts.columns
 
 
 def test_load_dashboard_payload_handles_seeded_state(monkeypatch) -> None:

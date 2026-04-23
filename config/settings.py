@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from functools import lru_cache
+from importlib.util import find_spec
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -42,6 +43,21 @@ def _parse_csv(value: str) -> tuple[str, ...]:
     return tuple(item for item in items if item)
 
 
+def _detect_postgres_sqlalchemy_driver() -> str:
+    configured_driver = os.getenv("POSTGRES_SQLALCHEMY_DRIVER")
+    if configured_driver:
+        return configured_driver
+
+    if find_spec("psycopg2") is not None:
+        return "postgresql+psycopg2"
+    if find_spec("psycopg") is not None:
+        return "postgresql+psycopg"
+    if find_spec("pg8000") is not None:
+        return "postgresql+pg8000"
+
+    return "postgresql+psycopg2"
+
+
 @dataclass(frozen=True)
 class Settings:
     citybikes_base_url: str
@@ -59,6 +75,7 @@ class Settings:
     postgres_db: str
     postgres_user: str
     postgres_password: str
+    postgres_sqlalchemy_driver: str
     spark_master_url: str
     spark_app_name: str
     spark_checkpoint_dir: str
@@ -77,7 +94,7 @@ class Settings:
     @property
     def sqlalchemy_url(self) -> str:
         return (
-            f"postgresql+psycopg2://{self.postgres_user}:{self.postgres_password}"
+            f"{self.postgres_sqlalchemy_driver}://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
 
@@ -112,6 +129,7 @@ def load_settings() -> Settings:
         postgres_db=_get_env("POSTGRES_DB", "citybike"),
         postgres_user=_get_env("POSTGRES_USER", "citybike"),
         postgres_password=_get_env("POSTGRES_PASSWORD", "citybike"),
+        postgres_sqlalchemy_driver=_detect_postgres_sqlalchemy_driver(),
         spark_master_url=_get_env("SPARK_MASTER_URL", "spark://spark-master:7077"),
         spark_app_name=_get_env("SPARK_APP_NAME", "citybike-stream-analytics"),
         spark_checkpoint_dir=_get_env(
@@ -124,6 +142,6 @@ def load_settings() -> Settings:
         critical_bikes_threshold=_get_int("CRITICAL_BIKES_THRESHOLD", 2),
         critical_utilization_threshold=_get_float("CRITICAL_UTILIZATION_THRESHOLD", 0.85),
         top_station_limit=_get_int("TOP_STATION_LIMIT", 10),
-        dashboard_refresh_seconds=_get_int("DASHBOARD_REFRESH_SECONDS", 5),
+        dashboard_refresh_seconds=_get_int("DASHBOARD_REFRESH_SECONDS", 300),
         streamlit_server_port=_get_int("STREAMLIT_SERVER_PORT", 8501),
     )

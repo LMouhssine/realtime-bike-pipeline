@@ -55,6 +55,87 @@ FLOAT_COLUMNS = {
     "estimated_activity",
 }
 TIMESTAMP_COLUMNS = {"snapshot_timestamp", "created_at", "ingested_at"}
+LATEST_STATUS_COLUMNS = (
+    "city",
+    "station_name",
+    "latitude",
+    "longitude",
+    "bikes_available",
+    "free_slots",
+    "capacity",
+    "utilization_rate",
+    "zone_id",
+    "snapshot_timestamp",
+    "ingested_at",
+)
+TOP_STATIONS_COLUMNS = (
+    "city",
+    "station_name",
+    "bikes_available",
+    "free_slots",
+    "capacity",
+    "utilization_rate",
+    "zone_id",
+    "snapshot_timestamp",
+    "utilization_rank",
+)
+CITY_SUMMARY_COLUMNS = (
+    "city",
+    "station_count",
+    "avg_utilization_rate",
+    "avg_bikes_available",
+    "empty_stations",
+    "low_stock_stations",
+)
+LOW_AVAILABILITY_COLUMNS = (
+    "city",
+    "zone_id",
+    "station_count",
+    "avg_bikes_available",
+    "avg_free_slots",
+    "avg_utilization_rate",
+    "shortage_flag",
+    "snapshot_timestamp",
+)
+PEAKS_COLUMNS = (
+    "city",
+    "usage_date",
+    "usage_hour",
+    "estimated_activity",
+    "peak_rank",
+)
+CRITICAL_COLUMNS = (
+    "city",
+    "station_name",
+    "bikes_available",
+    "free_slots",
+    "utilization_rate",
+    "rolling_15m_utilization",
+    "is_empty",
+    "snapshot_timestamp",
+    "alert_level",
+)
+ALERTS_COLUMNS = (
+    "city",
+    "station_name",
+    "alert_type",
+    "alert_message",
+    "bikes_available",
+    "free_slots",
+    "utilization_rate",
+    "snapshot_timestamp",
+    "created_at",
+)
+IMBALANCE_COLUMNS = (
+    "city",
+    "zone_id",
+    "avg_bikes_available",
+    "avg_capacity",
+    "zone_availability_ratio",
+    "city_availability_ratio",
+    "imbalance_score",
+    "snapshot_timestamp",
+)
 DISPLAY_LABELS = {
     "city": "Ville",
     "station_name": "Station",
@@ -534,7 +615,10 @@ def safe_query(query: str, params: dict[str, object] | None = None) -> pd.DataFr
     try:
         with get_engine().connect() as connection:
             return pd.read_sql_query(text(query), connection, params=params or {})
-    except SQLAlchemyError as exc:
+    except (SQLAlchemyError, ModuleNotFoundError, ImportError, OSError) as exc:
+        LOGGER.warning("Dashboard query failed: %s", exc)
+        return pd.DataFrame()
+    except Exception as exc:  # pragma: no cover - defensive guard for local runtime issues
         LOGGER.warning("Dashboard query failed: %s", exc)
         return pd.DataFrame()
 
@@ -763,18 +847,29 @@ def load_geographic_imbalance() -> pd.DataFrame:
     )
 
 
+def ensure_frame_schema(frame: pd.DataFrame, columns: Iterable[str]) -> pd.DataFrame:
+    normalized = frame.copy()
+    for column in columns:
+        if column not in normalized.columns:
+            normalized[column] = pd.NA
+    return normalized.loc[:, list(columns)]
+
+
 def load_dashboard_payload(settings: Settings) -> DashboardPayload:
     return DashboardPayload(
         metrics=load_overview_metrics(),
         freshness=load_data_freshness(),
-        latest_status=load_latest_station_status(),
-        top_stations=load_top_utilization_stations(settings.top_station_limit),
-        city_summary=load_city_summary(),
-        low_availability=load_low_availability_zones(),
-        peaks=load_daily_usage_peaks(),
-        critical=load_critical_stations(),
-        alerts=load_station_alerts(),
-        imbalance=load_geographic_imbalance(),
+        latest_status=ensure_frame_schema(load_latest_station_status(), LATEST_STATUS_COLUMNS),
+        top_stations=ensure_frame_schema(
+            load_top_utilization_stations(settings.top_station_limit),
+            TOP_STATIONS_COLUMNS,
+        ),
+        city_summary=ensure_frame_schema(load_city_summary(), CITY_SUMMARY_COLUMNS),
+        low_availability=ensure_frame_schema(load_low_availability_zones(), LOW_AVAILABILITY_COLUMNS),
+        peaks=ensure_frame_schema(load_daily_usage_peaks(), PEAKS_COLUMNS),
+        critical=ensure_frame_schema(load_critical_stations(), CRITICAL_COLUMNS),
+        alerts=ensure_frame_schema(load_station_alerts(), ALERTS_COLUMNS),
+        imbalance=ensure_frame_schema(load_geographic_imbalance(), IMBALANCE_COLUMNS),
     )
 
 
@@ -946,6 +1041,15 @@ def format_count(value: int | float) -> str:
 
 def format_rate(value: float) -> str:
     return f"{float(value):.1%}"
+
+
+def format_refresh_interval(seconds: int) -> str:
+    if seconds % 3600 == 0:
+        hours = seconds // 3600
+        return f"{hours} h" if hours > 1 else "1 h"
+    if seconds % 60 == 0:
+        return f"{seconds // 60} min"
+    return f"{seconds} s"
 
 
 def format_signed_delta(delta: int | float, suffix: str = "") -> str:
@@ -1179,31 +1283,17 @@ def render_topbar(
     selected_cities: list[str],
     available_city_count: int,
 ) -> None:
-    left_col, right_col = st.columns([7.4, 2.6], vertical_alignment="bottom")
+    left_col, right_col = st.columns([6, 1.5], vertical_alignment="bottom")
 
     with left_col:
-        st.markdown(
-            """
-            <section class="topbar">
-                <div class="topbar__kicker">CityBike Ops Cockpit</div>
-                <div class="topbar__title">Reseau velo urbain en temps reel</div>
-                <p class="topbar__subtitle">
-                    Poste de pilotage national pour suivre la disponibilite des stations, les tensions
-                    locales et les signaux critiques sans quitter la page.
-                </p>
-            </section>
-            """,
-            unsafe_allow_html=True,
+        st.title("CityBike France")
+        st.caption(
+            "Vue simple du reseau pour suivre les stations, les alertes et les zones en tension."
         )
 
     with right_col:
-        render_section_label("Action")
         if st.button("Actualiser", key="dashboard_manual_refresh", use_container_width=True):
             st.rerun()
-        render_muted_text(
-            f"{metrics['total_stations']} stations chargees | rafraichissement auto toutes les "
-            f"{settings.dashboard_refresh_seconds} s."
-        )
 
     badge_cols = st.columns([2.8, 2.1, 2.1, 1.9], vertical_alignment="center")
     with badge_cols[0]:
@@ -1217,7 +1307,10 @@ def render_topbar(
             f"Scope: {len(selected_cities)}/{available_city_count} villes",
             tone="info",
         )
-    render_muted_text(status["cadence"])
+    st.caption(
+        f"{metrics['total_stations']} stations chargees · refresh auto toutes les "
+        f"{format_refresh_interval(settings.dashboard_refresh_seconds)} · {status['cadence']}"
+    )
 
 
 def render_metric_ribbon(
@@ -1229,80 +1322,54 @@ def render_metric_ribbon(
     first_row = st.columns(3)
     second_row = st.columns(3)
 
-    station_delta = metric_deltas["total_stations"]
-    utilization_delta = metric_deltas["avg_utilization_rate"]
-    empty_delta = metric_deltas["empty_stations"]
-    critical_delta = metric_deltas["critical_station_count"]
-
-    render_metric_card(
-        first_row[0],
-        eyebrow="Stations suivies",
-        value=format_count(metrics["total_stations"]),
-        trend_text=(
-            format_signed_delta(int(station_delta), "stations")
+    first_row[0].metric(
+        "Stations suivies",
+        format_count(metrics["total_stations"]),
+        delta=(
+            format_signed_delta(int(metric_deltas["total_stations"]), "stations")
             if snapshot_changed
-            else "Stable tant que le snapshot ne bouge pas"
+            else "Stable"
         ),
-        trend_style=describe_delta_style(int(station_delta)) if snapshot_changed else "neutral",
-        caption="Volume courant consolide dans latest_station_status.",
-        accent="teal",
     )
-    render_metric_card(
-        first_row[1],
-        eyebrow="Villes actives",
-        value=format_count(metrics["tracked_cities"]),
-        trend_text="Couverture du perimetre surveille",
-        trend_style="neutral",
-        caption="Nombre de villes actuellement representees dans la couche or.",
-        accent="slate",
+    first_row[1].metric(
+        "Villes actives",
+        format_count(metrics["tracked_cities"]),
+        delta="Scope actif",
     )
-    render_metric_card(
-        first_row[2],
-        eyebrow="Utilisation moyenne",
-        value=format_rate(float(metrics["avg_utilization_rate"])),
-        trend_text=(
-            format_signed_delta(float(utilization_delta), "pts")
+    first_row[2].metric(
+        "Utilisation moyenne",
+        format_rate(float(metrics["avg_utilization_rate"])),
+        delta=(
+            format_signed_delta(float(metric_deltas["avg_utilization_rate"]), "pts")
             if snapshot_changed
-            else "Lecture en direct du dernier snapshot"
+            else "Stable"
         ),
-        trend_style=describe_delta_style(float(utilization_delta)) if snapshot_changed else "neutral",
-        caption="Charge moyenne du reseau au niveau national.",
-        accent="amber",
     )
-    render_metric_card(
-        second_row[0],
-        eyebrow="Stations vides",
-        value=format_count(metrics["empty_stations"]),
-        trend_text=(
-            format_signed_delta(int(empty_delta), "stations")
+    second_row[0].metric(
+        "Stations vides",
+        format_count(metrics["empty_stations"]),
+        delta=(
+            format_signed_delta(int(metric_deltas["empty_stations"]), "stations")
             if snapshot_changed
-            else "Pas de nouveau snapshot detecte"
+            else "Stable"
         ),
-        trend_style=describe_delta_style(int(empty_delta)) if snapshot_changed else "neutral",
-        caption="Stations sans velo dans l'etat courant consolide.",
-        accent="coral",
+        delta_color="inverse",
     )
-    render_metric_card(
-        second_row[1],
-        eyebrow="Stations critiques",
-        value=format_count(metrics["critical_station_count"]),
-        trend_text=(
-            format_signed_delta(int(critical_delta), "stations")
+    second_row[1].metric(
+        "Stations critiques",
+        format_count(metrics["critical_station_count"]),
+        delta=(
+            format_signed_delta(int(metric_deltas["critical_station_count"]), "stations")
             if snapshot_changed
-            else "Etat critique stable"
+            else "Stable"
         ),
-        trend_style=describe_delta_style(int(critical_delta)) if snapshot_changed else "neutral",
-        caption="Stations marquees critiques par les regles metier.",
-        accent="slate",
+        delta_color="inverse",
     )
-    render_metric_card(
-        second_row[2],
-        eyebrow="Alertes 24 h",
-        value=format_count(metrics["alert_count_24h"]),
-        trend_text=f"{format_count(metrics['alert_count_1h'])} sur la derniere heure",
-        trend_style="neutral",
-        caption="Alertes historisees pour stations vides ou critiques.",
-        accent="teal",
+    second_row[2].metric(
+        "Alertes 24 h",
+        format_count(metrics["alert_count_24h"]),
+        delta=f"{format_count(metrics['alert_count_1h'])} sur 1 h",
+        delta_color="inverse",
     )
 
 
@@ -1384,10 +1451,8 @@ def render_map_panel(
     latest_status: pd.DataFrame,
     station_focus: str,
 ) -> None:
-    render_subsection_title("Live Network")
-    render_muted_text(
-        "Vue principale temps reel du reseau. Le filtre de focus affine uniquement la lecture terrain visible."
-    )
+    st.subheader("Carte reseau")
+    st.caption("Vue terrain du reseau selon les filtres actifs.")
     st.radio(
         "Mode carte",
         MAP_MODE_OPTIONS,
@@ -1401,7 +1466,7 @@ def render_map_panel(
     else:
         render_heatmap(latest_status)
 
-    render_muted_text(
+    st.caption(
         f"{len(latest_status)} station(s) visibles avec le focus '{station_focus.lower()}'."
     )
 
@@ -1550,8 +1615,8 @@ def build_activity_chart(peaks: pd.DataFrame) -> alt.Chart | None:
                 alt.Tooltip("peak_rank:Q", title="Rang"),
             ],
         )
-        .properties(height=320)
-        .configure_view(strokeOpacity=0)
+        .properties(height=320, background="#ffffff")
+        .configure_view(fill="#ffffff", strokeOpacity=0)
         .configure_axis(
             labelColor="#5f747c",
             titleColor="#11232b",
@@ -1597,8 +1662,8 @@ def build_imbalance_chart(imbalance: pd.DataFrame) -> alt.Chart | None:
                 alt.Tooltip("avg_capacity:Q", title="Capacite moyenne", format=".2f"),
             ],
         )
-        .properties(height=320)
-        .configure_view(strokeOpacity=0)
+        .properties(height=320, background="#ffffff")
+        .configure_view(fill="#ffffff", strokeOpacity=0)
         .configure_axis(
             labelColor="#5f747c",
             titleColor="#11232b",
@@ -1720,10 +1785,235 @@ def render_footer(status: dict[str, str]) -> None:
     )
 
 
+def render_ops_rail(
+    metrics: dict[str, float | int],
+    critical: pd.DataFrame,
+    low_availability: pd.DataFrame,
+    top_stations: pd.DataFrame,
+) -> None:
+    st.subheader("A surveiller")
+    quick_cols = st.columns(2)
+    quick_cols[0].metric("Alertes 1 h", format_count(metrics["alert_count_1h"]), delta="glissant")
+    quick_cols[1].metric(
+        "Stations critiques",
+        format_count(len(critical)),
+        delta="live",
+        delta_color="inverse",
+    )
+
+    st.markdown("**Stations critiques**")
+    if critical.empty:
+        st.info("Aucune station critique active.")
+    else:
+        critical_view = critical.head(5)[
+            ["city", "station_name", "bikes_available", "rolling_15m_utilization"]
+        ].copy()
+        st.dataframe(localize_frame(critical_view), use_container_width=True, hide_index=True)
+
+    st.markdown("**Zones en tension**")
+    shortage = low_availability[low_availability["shortage_flag"]] if not low_availability.empty else low_availability
+    if shortage.empty:
+        st.info("Aucune zone en tension.")
+    else:
+        shortage_view = shortage.head(5)[
+            ["city", "zone_id", "station_count", "avg_bikes_available", "avg_utilization_rate"]
+        ].copy()
+        st.dataframe(localize_frame(shortage_view), use_container_width=True, hide_index=True)
+
+    st.markdown("**Top saturation**")
+    if top_stations.empty:
+        st.info("Pas encore de top stations consolide.")
+    else:
+        top_view = top_stations.head(5)[
+            ["city", "station_name", "bikes_available", "capacity", "utilization_rate"]
+        ].copy()
+        st.dataframe(localize_frame(top_view), use_container_width=True, hide_index=True)
+
+
+def render_city_health(city_summary: pd.DataFrame) -> None:
+    render_section_label("Villes")
+    st.subheader("Vue par ville")
+    st.caption("Lecture simple des indicateurs locaux.")
+
+    if city_summary.empty:
+        st.info("Le tableau ville apparaitra des que les vues analytiques seront chargees.")
+        return
+
+    city_view = city_summary[
+        [
+            "city",
+            "station_count",
+            "avg_utilization_rate",
+            "avg_bikes_available",
+            "empty_stations",
+            "low_stock_stations",
+        ]
+    ].copy()
+    st.dataframe(localize_frame(city_view), use_container_width=True, hide_index=True)
+
+
+def render_analytics(peaks: pd.DataFrame, imbalance: pd.DataFrame) -> None:
+    render_section_label("Analyses")
+    analytics_left, analytics_right = st.columns(2)
+
+    with analytics_left:
+        st.subheader("Activite estimee")
+        st.caption("Inference horaire a partir des variations de stock.")
+        activity_chart = build_activity_chart(peaks)
+        if activity_chart is None:
+            st.info("L'activite apparaitra quand l'historique de snapshots sera suffisant.")
+        else:
+            st.altair_chart(activity_chart, use_container_width=True)
+
+    with analytics_right:
+        st.subheader("Desequilibre geographique")
+        st.caption("Comparaison des zones par rapport a leur moyenne ville.")
+        imbalance_chart = build_imbalance_chart(imbalance)
+        if imbalance_chart is None:
+            st.info("Le desequilibre geographique apparaitra apres le premier calcul analytique.")
+        else:
+            st.altair_chart(imbalance_chart, use_container_width=True)
+
+
+def render_drilldown_details(
+    latest_status: pd.DataFrame,
+    top_stations: pd.DataFrame,
+    low_availability: pd.DataFrame,
+    alerts: pd.DataFrame,
+) -> None:
+    render_section_label("Details")
+    st.subheader("Tables de detail")
+    st.caption("Les tableaux complets restent accessibles en second niveau.")
+
+    left_col, right_col = st.columns(2)
+
+    with left_col:
+        with st.expander("Stations visibles", expanded=False):
+            if latest_status.empty:
+                st.info("Aucune station visible avec les filtres actifs.")
+            else:
+                st.dataframe(
+                    localize_frame(
+                        latest_status[
+                            [
+                                "city",
+                                "station_name",
+                                "bikes_available",
+                                "free_slots",
+                                "capacity",
+                                "utilization_rate",
+                                "snapshot_timestamp",
+                            ]
+                        ]
+                    ),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+        with st.expander("Top utilisation", expanded=False):
+            if top_stations.empty:
+                st.info("Aucune station a forte utilisation n'est encore disponible.")
+            else:
+                st.dataframe(localize_frame(top_stations), use_container_width=True, hide_index=True)
+
+    with right_col:
+        with st.expander("Zones a faible disponibilite", expanded=False):
+            if low_availability.empty:
+                st.info("Aucune zone a faible disponibilite.")
+            else:
+                focus_frame = low_availability.copy()
+                if "shortage_flag" in focus_frame.columns:
+                    focus_frame = focus_frame[focus_frame["shortage_flag"]]
+                st.dataframe(localize_frame(focus_frame), use_container_width=True, hide_index=True)
+
+        with st.expander("Alertes recentes", expanded=False):
+            if alerts.empty:
+                st.info("Aucune alerte recente n'a encore ete capturee.")
+            else:
+                st.dataframe(localize_frame(alerts), use_container_width=True, hide_index=True)
+
+
+def render_footer(status: dict[str, str]) -> None:
+    st.caption(
+        f"Source: CityBikes API · Etat du flux: {status['message']} · "
+        f"Dernier snapshot: {status['latest_snapshot']}"
+    )
+
+
+def apply_theme() -> None:
+    st.markdown(
+        """
+        <style>
+        .block-container {
+            max-width: 1320px;
+            padding-top: 1rem;
+            padding-bottom: 2rem;
+        }
+
+        [data-testid="stMetric"] {
+            border: 1px solid rgba(49, 51, 63, 0.12);
+            border-radius: 14px;
+            padding: 0.75rem 0.85rem;
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        [data-testid="stDataFrame"],
+        [data-testid="stExpander"] details {
+            border-radius: 12px;
+        }
+
+        [data-testid="stVegaLiteChart"] {
+            background: #ffffff;
+            border: 1px solid rgba(49, 51, 63, 0.12);
+            border-radius: 12px;
+            padding: 0.35rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_topbar(
+    settings: Settings,
+    metrics: dict[str, float | int],
+    status: dict[str, str],
+    selected_cities: list[str],
+    available_city_count: int,
+) -> None:
+    title_col, action_col = st.columns([6, 1.3], vertical_alignment="bottom")
+
+    with title_col:
+        st.title("CityBike France")
+        st.caption("Dashboard simple pour suivre le reseau, les alertes et les zones en tension.")
+
+    with action_col:
+        if st.button("Actualiser", key="dashboard_manual_refresh", use_container_width=True):
+            st.rerun()
+
+    if status["level"] == "warning":
+        st.warning(status["message"])
+    elif status["level"] == "live":
+        st.success(status["message"])
+    else:
+        st.info(status["message"])
+
+    meta_cols = st.columns(4)
+    meta_cols[0].caption(f"Snapshot: {status['latest_snapshot']}")
+    meta_cols[1].caption(f"Ingestion: {status['latest_ingested']}")
+    meta_cols[2].caption(f"Scope: {len(selected_cities)}/{available_city_count} villes")
+    meta_cols[3].caption(f"Refresh: {format_refresh_interval(settings.dashboard_refresh_seconds)}")
+    st.caption(
+        f"{metrics['total_stations']} stations chargees · {status['cadence']}"
+    )
+
+
 def render_dashboard(settings: Settings) -> None:
     payload = load_dashboard_payload(settings)
 
-    city_options = sorted(payload.latest_status["city"].dropna().unique().tolist())
+    city_options = sorted(
+        payload.latest_status.get("city", pd.Series(dtype="object")).dropna().unique().tolist()
+    )
     if not city_options:
         city_options = list(settings.target_cities)
 
@@ -1769,7 +2059,7 @@ def render_dashboard(settings: Settings) -> None:
 
         filter_right.markdown('<div class="filter-label">Rafraichissement</div>', unsafe_allow_html=True)
         filter_right.markdown(
-            f'<p class="subsection-note">Auto toutes les {settings.dashboard_refresh_seconds} s.</p>',
+            f'<p class="subsection-note">Auto toutes les {format_refresh_interval(settings.dashboard_refresh_seconds)}.</p>',
             unsafe_allow_html=True,
         )
 
@@ -1815,7 +2105,7 @@ def main() -> None:
     settings = load_settings()
 
     st.set_page_config(
-        page_title="CityBike Ops Cockpit",
+        page_title="CityBike France",
         page_icon=":bike:",
         layout="wide",
     )
